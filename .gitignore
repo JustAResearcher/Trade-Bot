@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs & runtime files
+*.log
+mewc_trader_state.json
+
+# Sensitive
+nonkyc_settings.json
+
+# Project-specific files not part of the bot
+*.bak
+*.txt
+bitcoin/
+Cache/
+meowcoin/
+mewc_maintest/
+solo_mine_srbminer.bat
+make_bootstrap.ps1
+
+# Other scripts (not part of the trading bot)
+abandon_and_send.py
+auto_consolidate.py
+batch_send_v2.py
+batch_send.py
+bump_1mewc.py
+bump_all_fees.py
+bump_proper.py
+bump10.py
+bumpfee_test.py
+capture_kawpow_format.py
+capture_kawpow_format2.py
+check_*.py
+clean_status.py
+confirmed_only.py
+consolidat*.py
+count_keys_both.py
+create_clean_wallet.py
+daily_sweep.py
+debug_bdb*.py
+deep_investigate.py
+definitive_investigation.py
+diagnose_gap.py
+extract_wallet_keys.py
+find_*.py
+fix_*.py
+import_keys*.py
+investigate*.py
+migrate_wallet.py
+nuke_*.py
+quick_*.py
+reimport_*.py
+rescan_wallet.py
+send_*.py
+status.py
+step1_abandon.py
+stratum_proxy.py
+STRATUM_PROXY_README.md
+VALIDATION_REPORT.md
+sweep_clean.py
+tail_log.py
+test_nonkyc_api.py
+trace_coins.py
+try_bumpfee.py
+wallet_diagnose.py
