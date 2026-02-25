@@ -800,13 +800,13 @@ class TradingBotGUI:
             self.api = NonKYCApi(settings["access_key"], settings["secret_key"])
             self.bot = TradingBot(self.api, log_callback=self._append_log)
         except Exception as e:
-            self.root.withdraw()          # hide unfinished main window
-            messagebox.showerror("Config Error",
-                                f"Could not load {SETTINGS_FILE}:\n{e}\n\n"
-                                f"Place nonkyc_settings.json next to the exe/script with:\n"
-                                f'  {{"access_key": "...", "secret_key": "..."}}\n\n'
-                                f"Expected path: {SETTINGS_FILE}")
-            self.root.destroy()
+            msg = (f"Could not load settings:\n{e}\n\n"
+                   f"Place nonkyc_settings.json next to the exe/script with:\n"
+                   f'  {{"access_key": "...", "secret_key": "..."}}\n\n'
+                   f"Expected path:\n{SETTINGS_FILE}")
+            _write_crash_log(f"_load_api failed: {e}")
+            self.root.destroy()           # close the half-built main window
+            _show_error_window("Config Error", msg)
             sys.exit(1)
 
     def _populate_settings_from_bot(self):
@@ -1270,6 +1270,39 @@ class TradingBotGUI:
 
 
 # ---------------------------------------------------------------------------
+# Crash log helper
+# ---------------------------------------------------------------------------
+
+def _write_crash_log(msg: str):
+    """Write a crash report next to the exe/script for debugging."""
+    try:
+        crash_path = os.path.join(_APP_DIR, "mewc_trader_crash.log")
+        with open(crash_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} — {msg}\n")
+    except Exception:
+        pass  # if we can't write the crash log, nothing we can do
+
+
+def _show_error_window(title: str, message: str):
+    """Show a standalone Tk error window that works in frozen / --windowed mode."""
+    err = tk.Tk()
+    err.title(title)
+    err.configure(bg="#1e1e2e")
+    err.geometry("560x260")
+    err.resizable(False, False)
+    tk.Label(err, text=title, fg="#ff5252", bg="#1e1e2e",
+             font=("Segoe UI", 13, "bold")).pack(pady=(14, 4))
+    txt = tk.Text(err, wrap="word", bg="#2a2a3c", fg="#eaeaea",
+                  font=("Consolas", 10), relief="flat", height=8)
+    txt.pack(padx=14, pady=6, fill="both", expand=True)
+    txt.insert("1.0", message)
+    txt.configure(state="disabled")
+    tk.Button(err, text="OK", width=10, command=err.destroy,
+              bg="#3a5a8c", fg="#eaeaea", font=("Segoe UI", 10, "bold")).pack(pady=(0, 10))
+    err.mainloop()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1294,4 +1327,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc()
+        _write_crash_log(tb)
+        try:
+            _show_error_window("MEWC Trader — Fatal Error", tb)
+        except Exception:
+            pass
+        sys.exit(1)
