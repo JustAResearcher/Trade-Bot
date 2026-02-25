@@ -37,9 +37,16 @@ from tkinter import ttk, scrolledtext, messagebox
 # Configuration
 # ---------------------------------------------------------------------------
 
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonkyc_settings.json")
-BOT_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mewc_trader_state.json")
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mewc_trader.log")
+# When frozen by PyInstaller --onefile, __file__ points to a temp dir.
+# Use the exe's real directory instead so settings persist next to the exe.
+if getattr(sys, 'frozen', False):
+    _APP_DIR = os.path.dirname(sys.executable)
+else:
+    _APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SETTINGS_FILE = os.path.join(_APP_DIR, "nonkyc_settings.json")
+BOT_STATE_FILE = os.path.join(_APP_DIR, "mewc_trader_state.json")
+LOG_FILE = os.path.join(_APP_DIR, "mewc_trader.log")
 
 API_BASE = "api.nonkyc.io"
 API_PATH = "/api/v2"
@@ -793,9 +800,13 @@ class TradingBotGUI:
             self.api = NonKYCApi(settings["access_key"], settings["secret_key"])
             self.bot = TradingBot(self.api, log_callback=self._append_log)
         except Exception as e:
+            self.root.withdraw()          # hide unfinished main window
             messagebox.showerror("Config Error",
                                 f"Could not load {SETTINGS_FILE}:\n{e}\n\n"
-                                "Create a file with access_key and secret_key.")
+                                f"Place nonkyc_settings.json next to the exe/script with:\n"
+                                f'  {{"access_key": "...", "secret_key": "..."}}\n\n'
+                                f"Expected path: {SETTINGS_FILE}")
+            self.root.destroy()
             sys.exit(1)
 
     def _populate_settings_from_bot(self):
