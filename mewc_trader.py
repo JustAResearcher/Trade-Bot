@@ -91,8 +91,8 @@ class NonKYCApi:
     """Synchronous REST API client for NonKYC.io with HMAC-SHA256 auth."""
 
     def __init__(self, access_key: str, secret_key: str):
-        self.access_key = access_key
-        self.secret_key = secret_key
+        self.access_key = access_key.strip()
+        self.secret_key = secret_key.strip()
         self.base = API_BASE
         self.path = API_PATH
 
@@ -797,7 +797,11 @@ class TradingBotGUI:
         try:
             with open(SETTINGS_FILE) as f:
                 settings = json.load(f)
-            self.api = NonKYCApi(settings["access_key"], settings["secret_key"])
+            ak = settings["access_key"].strip()
+            sk = settings["secret_key"].strip()
+            if not ak or not sk:
+                raise ValueError("access_key or secret_key is empty")
+            self.api = NonKYCApi(ak, sk)
             self.bot = TradingBot(self.api, log_callback=self._append_log)
         except Exception as e:
             msg = (f"Could not load settings:\n{e}\n\n"
