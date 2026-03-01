@@ -794,24 +794,121 @@ class TradingBotGUI:
         self._update_display()
 
     def _load_api(self):
+        settings = None
+        # Try to load existing settings
         try:
             with open(SETTINGS_FILE) as f:
                 settings = json.load(f)
-            ak = settings["access_key"].strip()
-            sk = settings["secret_key"].strip()
-            if not ak or not sk:
-                raise ValueError("access_key or secret_key is empty")
-            self.api = NonKYCApi(ak, sk)
-            self.bot = TradingBot(self.api, log_callback=self._append_log)
+        except FileNotFoundError:
+            pass  # will prompt below
         except Exception as e:
-            msg = (f"Could not load settings:\n{e}\n\n"
-                   f"Place nonkyc_settings.json next to the exe/script with:\n"
-                   f'  {{"access_key": "...", "secret_key": "..."}}\n\n'
-                   f"Expected path:\n{SETTINGS_FILE}")
-            _write_crash_log(f"_load_api failed: {e}")
-            self.root.destroy()           # close the half-built main window
+            _write_crash_log(f"_load_api JSON parse error: {e}")
+
+        # If no settings file or missing keys, show first-run setup dialog
+        if not settings or not settings.get("access_key") or not settings.get("secret_key"):
+            result = self._show_setup_dialog()
+            if result is None:
+                self.root.destroy()
+                sys.exit(0)
+            settings = result
+
+        ak = settings["access_key"].strip()
+        sk = settings["secret_key"].strip()
+        if not ak or not sk:
+            msg = ("API keys are empty.\n\n"
+                   "Please re-run and enter valid NonKYC.io API keys.")
+            _write_crash_log("_load_api: empty keys after setup")
+            self.root.destroy()
             _show_error_window("Config Error", msg)
             sys.exit(1)
+
+        self.api = NonKYCApi(ak, sk)
+        self.bot = TradingBot(self.api, log_callback=self._append_log)
+
+    def _show_setup_dialog(self):
+        """Show a first-run setup dialog to collect API keys. Returns dict or None."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("MEWC Trader — First Run Setup")
+        dlg.configure(bg="#1e1e2e")
+        dlg.geometry("520x340")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.transient(self.root)
+
+        result = {"ok": False, "ak": "", "sk": ""}
+
+        tk.Label(dlg, text="Welcome to MEWC Trader!", fg="#4fc3f7",
+                 bg="#1e1e2e", font=("Segoe UI", 14, "bold")).pack(pady=(16, 4))
+        tk.Label(dlg, text="Enter your NonKYC.io API keys to get started.",
+                 fg="#aaaaaa", bg="#1e1e2e", font=("Segoe UI", 10)).pack(pady=(0, 12))
+
+        frame = tk.Frame(dlg, bg="#1e1e2e")
+        frame.pack(padx=24, fill="x")
+
+        tk.Label(frame, text="Access Key:", fg="#eaeaea", bg="#1e1e2e",
+                 font=("Segoe UI", 10), anchor="w").pack(fill="x", pady=(4, 0))
+        ak_entry = tk.Entry(frame, font=("Consolas", 11), bg="#2a2a3c",
+                            fg="#eaeaea", insertbackground="#eaeaea",
+                            relief="flat", bd=4)
+        ak_entry.pack(fill="x", pady=(2, 8), ipady=3)
+
+        tk.Label(frame, text="Secret Key:", fg="#eaeaea", bg="#1e1e2e",
+                 font=("Segoe UI", 10), anchor="w").pack(fill="x", pady=(4, 0))
+        sk_entry = tk.Entry(frame, font=("Consolas", 11), bg="#2a2a3c",
+                            fg="#eaeaea", insertbackground="#eaeaea",
+                            relief="flat", bd=4, show="*")
+        sk_entry.pack(fill="x", pady=(2, 8), ipady=3)
+
+        show_var = tk.BooleanVar(value=False)
+        def _toggle_show():
+            sk_entry.config(show="" if show_var.get() else "*")
+        tk.Checkbutton(frame, text="Show secret key", variable=show_var,
+                       command=_toggle_show, fg="#aaaaaa", bg="#1e1e2e",
+                       selectcolor="#2a2a3c", activebackground="#1e1e2e",
+                       activeforeground="#aaaaaa", font=("Segoe UI", 9)).pack(anchor="w")
+
+        tk.Label(frame, text="Get your keys at: nonkyc.io > Settings > API Keys",
+                 fg="#666666", bg="#1e1e2e", font=("Segoe UI", 9)).pack(pady=(8, 0))
+
+        btn_frame = tk.Frame(dlg, bg="#1e1e2e")
+        btn_frame.pack(pady=(16, 12))
+
+        def _on_save():
+            result["ak"] = ak_entry.get().strip()
+            result["sk"] = sk_entry.get().strip()
+            if not result["ak"] or not result["sk"]:
+                messagebox.showwarning("Missing Keys",
+                                       "Both Access Key and Secret Key are required.",
+                                       parent=dlg)
+                return
+            result["ok"] = True
+            dlg.destroy()
+
+        def _on_cancel():
+            dlg.destroy()
+
+        tk.Button(btn_frame, text="Save & Start", width=14, command=_on_save,
+                  bg="#2e7d32", fg="#ffffff", font=("Segoe UI", 10, "bold"),
+                  activebackground="#43a047", relief="flat", cursor="hand2").pack(side="left", padx=8)
+        tk.Button(btn_frame, text="Cancel", width=10, command=_on_cancel,
+                  bg="#555555", fg="#eaeaea", font=("Segoe UI", 10),
+                  activebackground="#777777", relief="flat", cursor="hand2").pack(side="left", padx=8)
+
+        ak_entry.focus_set()
+        dlg.protocol("WM_DELETE_WINDOW", _on_cancel)
+        dlg.wait_window()
+
+        if not result["ok"]:
+            return None
+
+        # Save to settings file
+        settings = {"access_key": result["ak"], "secret_key": result["sk"]}
+        try:
+            with open(SETTINGS_FILE, "w") as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            _write_crash_log(f"Failed to write settings: {e}")
+        return settings
 
     def _populate_settings_from_bot(self):
         """Push bot's current settings (loaded from file or defaults) into GUI fields."""
