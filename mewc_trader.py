@@ -55,16 +55,18 @@ SYMBOL_UNDERSCORE = "MEWC_USDT"
 
 # --- Buy side defaults (liberal — tight to market, frequent) ---
 DEFAULT_BUY_INTERVAL = 45          # seconds between buys
-DEFAULT_ORDER_USDT = 1.50          # USDT per buy order
+DEFAULT_ORDER_USDT = 1.50          # USDT per buy order (per layer)
 DEFAULT_BUDGET_USDT = 5000.0       # total max USDT to spend
 DEFAULT_MAX_PRICE = 0.00015        # max price willing to pay (safety)
 DEFAULT_BUY_MODE = "limit"         # "limit" or "market"
 DEFAULT_PRICE_BUMP = 1.0           # % above best ask for aggressive limit buys
+DEFAULT_BUY_LAYERS = 3             # number of staggered buy orders per cycle
+DEFAULT_BUY_LAYER_STEP = 0.5       # % price step between each layer
 
 # --- Sell side defaults (very conservative — wide spread, infrequent) ---
 DEFAULT_SELL_ENABLED = False        # sell side OFF by default
 DEFAULT_SELL_INTERVAL = 300         # seconds between sells (5 min)
-DEFAULT_SELL_ORDER_MEWC = 5000.0   # MEWC per sell order (small)
+DEFAULT_SELL_ORDER_USDT = 10.0     # USDT target per sell order
 DEFAULT_MIN_SELL_PRICE = 0.00005   # floor — never sell below this
 DEFAULT_SELL_SPREAD_PCT = 10.0     # % above best bid for sell price (very wide)
 DEFAULT_MIN_MEWC_RESERVE = 50000.0 # keep at least this much MEWC
@@ -255,11 +257,13 @@ class TradingBot:
         self.max_price = DEFAULT_MAX_PRICE
         self.buy_mode = DEFAULT_BUY_MODE
         self.price_bump_pct = DEFAULT_PRICE_BUMP
+        self.buy_layers = DEFAULT_BUY_LAYERS
+        self.buy_layer_step_pct = DEFAULT_BUY_LAYER_STEP
 
         # Sell config (very conservative defaults)
         self.sell_enabled = DEFAULT_SELL_ENABLED
         self.sell_interval = DEFAULT_SELL_INTERVAL
-        self.sell_order_mewc = DEFAULT_SELL_ORDER_MEWC
+        self.sell_order_usdt = DEFAULT_SELL_ORDER_USDT
         self.min_sell_price = DEFAULT_MIN_SELL_PRICE
         self.sell_spread_pct = DEFAULT_SELL_SPREAD_PCT
         self.min_mewc_reserve = DEFAULT_MIN_MEWC_RESERVE
@@ -321,9 +325,11 @@ class TradingBot:
             "max_price": self.max_price,
             "buy_mode": self.buy_mode,
             "price_bump_pct": self.price_bump_pct,
+            "buy_layers": self.buy_layers,
+            "buy_layer_step_pct": self.buy_layer_step_pct,
             "sell_enabled": self.sell_enabled,
             "sell_interval": self.sell_interval,
-            "sell_order_mewc": self.sell_order_mewc,
+            "sell_order_usdt": self.sell_order_usdt,
             "min_sell_price": self.min_sell_price,
             "sell_spread_pct": self.sell_spread_pct,
             "min_mewc_reserve": self.min_mewc_reserve,
@@ -351,10 +357,12 @@ class TradingBot:
             self.max_price = s.get("max_price", DEFAULT_MAX_PRICE)
             self.buy_mode = s.get("buy_mode", DEFAULT_BUY_MODE)
             self.price_bump_pct = s.get("price_bump_pct", DEFAULT_PRICE_BUMP)
+            self.buy_layers = s.get("buy_layers", DEFAULT_BUY_LAYERS)
+            self.buy_layer_step_pct = s.get("buy_layer_step_pct", DEFAULT_BUY_LAYER_STEP)
 
             self.sell_enabled = s.get("sell_enabled", DEFAULT_SELL_ENABLED)
             self.sell_interval = s.get("sell_interval", DEFAULT_SELL_INTERVAL)
-            self.sell_order_mewc = s.get("sell_order_mewc", DEFAULT_SELL_ORDER_MEWC)
+            self.sell_order_usdt = s.get("sell_order_usdt", DEFAULT_SELL_ORDER_USDT)
             self.min_sell_price = s.get("min_sell_price", DEFAULT_MIN_SELL_PRICE)
             self.sell_spread_pct = s.get("sell_spread_pct", DEFAULT_SELL_SPREAD_PCT)
             self.min_mewc_reserve = s.get("min_mewc_reserve", DEFAULT_MIN_MEWC_RESERVE)
@@ -471,8 +479,8 @@ class TradingBot:
         quant = Decimal("1") / Decimal(10 ** self.quantity_decimals)
         return qty.quantize(quant, rounding=ROUND_DOWN)
 
-    def place_buy_order(self) -> dict:
-        """Place a single buy order."""
+    def _place_single_buy(self, price: Decimal, layer: int = 1) -> dict:
+        """Place a single buy order at the given price. Returns the API result or None."""
         # Budget check
         remaining = Decimal(str(self.budget_usdt)) - self.total_usdt_spent
         if remaining < Decimal(str(self.order_usdt)):
@@ -485,25 +493,19 @@ class TradingBot:
             self._log(f"Insufficient USDT balance: {self.usdt_balance} < {self.order_usdt}")
             return None
 
-        # Price check
-        price = self._calculate_buy_price()
-        if price <= 0:
-            self._log("Could not determine buy price (ask is 0)")
-            return None
-
         if price > Decimal(str(self.max_price)):
-            self._log(f"Price {price} exceeds max price {self.max_price} — skipping")
+            self._log(f"Layer {layer}: price {price} exceeds max price {self.max_price} — skipping")
             return None
 
         qty = self._calculate_buy_quantity(price)
         if qty <= 0:
-            self._log("Calculated quantity is 0 — order too small")
+            self._log(f"Layer {layer}: calculated quantity is 0 — order too small")
             return None
 
         cost_usdt = (price * qty).quantize(Decimal("0.00000001"), rounding=ROUND_UP)
         order_id = str(uuid.uuid4()).replace("-", "")[:24]
 
-        self._log(f"Placing BUY: {qty} MEWC @ {price} USDT "
+        self._log(f"BUY L{layer}: {qty} MEWC @ {price} USDT "
                   f"(~{cost_usdt} USDT) [mode={self.buy_mode}]")
 
         try:
@@ -541,17 +543,37 @@ class TradingBot:
                     "qty": str(exec_qty),
                     "cost": str(actual_cost.quantize(Decimal("0.0001"))),
                 })
-                self._log(f"  -> Filled {exec_qty} MEWC (status: {status})")
+                self._log(f"  -> L{layer} Filled {exec_qty} MEWC (status: {status})")
             else:
-                self._log(f"  -> Order placed (status: {status}, "
+                self._log(f"  -> L{layer} Order placed (status: {status}, "
                           f"id: {result.get('id', 'unknown')[:12]}...)")
 
             self._save_state()
             return result
 
         except Exception as e:
-            self._log(f"  -> Order FAILED: {e}")
+            self._log(f"  -> L{layer} Order FAILED: {e}")
             return None
+
+    def place_buy_order(self):
+        """Place layered buy orders creating a deeper buy wall."""
+        top_price = self._calculate_buy_price()
+        if top_price <= 0:
+            self._log("Could not determine buy price (ask is 0)")
+            return
+
+        layers = max(1, int(self.buy_layers))
+        step = Decimal(str(self.buy_layer_step_pct)) / Decimal("100")
+        quant = Decimal("1") / Decimal(10 ** self.price_decimals)
+
+        for i in range(layers):
+            # Layer 1 = top price (aggressive), each subsequent layer steps down
+            layer_price = (top_price * (Decimal("1") - step * i)).quantize(
+                quant, rounding=ROUND_DOWN
+            )
+            if layer_price <= 0:
+                break
+            self._place_single_buy(layer_price, layer=i + 1)
 
     # ---- Sell side (very conservative) ----
 
@@ -564,12 +586,16 @@ class TradingBot:
         quant = Decimal("1") / Decimal(10 ** self.price_decimals)
         return price.quantize(quant, rounding=ROUND_UP)
 
-    def _calculate_sell_quantity(self) -> Decimal:
-        """Calculate sell quantity, respecting the MEWC reserve."""
+    def _calculate_sell_quantity(self, price: Decimal) -> Decimal:
+        """Calculate MEWC quantity to sell for the target USDT amount, respecting reserve."""
+        if price <= 0:
+            return Decimal("0")
         available = self.mewc_balance - Decimal(str(self.min_mewc_reserve))
         if available <= 0:
             return Decimal("0")
-        qty = min(available, Decimal(str(self.sell_order_mewc)))
+        # Calculate MEWC needed to hit the USDT target at the given price
+        target_qty = Decimal(str(self.sell_order_usdt)) / price
+        qty = min(available, target_qty)
         quant = Decimal("1") / Decimal(10 ** self.quantity_decimals)
         return qty.quantize(quant, rounding=ROUND_DOWN)
 
@@ -594,7 +620,7 @@ class TradingBot:
             self._log(f"SELL skip: price {price} below min sell floor {self.min_sell_price}")
             return None
 
-        qty = self._calculate_sell_quantity()
+        qty = self._calculate_sell_quantity(price)
         if qty <= 0:
             self._log("SELL skip: quantity is 0 after reserve")
             return None
@@ -646,10 +672,10 @@ class TradingBot:
     def _run_loop(self):
         """Main bot loop running in a thread."""
         self._log("Bot started — Asymmetric Market Maker active")
-        self._log(f"  BUY : every {self.buy_interval}s | {self.order_usdt} USDT | "
-                  f"bump {self.price_bump_pct}% | max {self.max_price}")
+        self._log(f"  BUY : every {self.buy_interval}s | {self.order_usdt} USDT x {self.buy_layers} layers "
+                  f"(step {self.buy_layer_step_pct}%) | bump {self.price_bump_pct}% | max {self.max_price}")
         if self.sell_enabled:
-            self._log(f"  SELL: every {self.sell_interval}s | {self.sell_order_mewc} MEWC | "
+            self._log(f"  SELL: every {self.sell_interval}s | {self.sell_order_usdt} USDT target | "
                       f"spread {self.sell_spread_pct}% | min {self.min_sell_price} | "
                       f"reserve {self.min_mewc_reserve}")
         else:
@@ -925,10 +951,12 @@ class TradingBotGUI:
         _set(self.max_price_entry, self.bot.max_price)
         self.mode_var.set(self.bot.buy_mode)
         _set(self.bump_entry, self.bot.price_bump_pct)
+        _set(self.layers_entry, self.bot.buy_layers)
+        _set(self.layer_step_entry, self.bot.buy_layer_step_pct)
 
         self.sell_enabled_var.set(self.bot.sell_enabled)
         _set(self.sell_interval_entry, self.bot.sell_interval)
-        _set(self.sell_order_entry, self.bot.sell_order_mewc)
+        _set(self.sell_order_entry, self.bot.sell_order_usdt)
         _set(self.min_sell_price_entry, self.bot.min_sell_price)
         _set(self.sell_spread_entry, self.bot.sell_spread_pct)
         _set(self.reserve_entry, self.bot.min_mewc_reserve)
@@ -1103,6 +1131,17 @@ class TradingBotGUI:
         self.bump_entry.insert(0, str(DEFAULT_PRICE_BUMP))
         self.bump_entry.grid(row=3, column=3, padx=(5, 0), pady=2)
 
+        # Row 4: buy layers + layer step
+        ttk.Label(bcf, text="Buy Layers:", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=2)
+        self.layers_entry = ttk.Entry(bcf, width=8)
+        self.layers_entry.insert(0, str(DEFAULT_BUY_LAYERS))
+        self.layers_entry.grid(row=4, column=1, padx=(5, 15), pady=2)
+
+        ttk.Label(bcf, text="Layer Step %:", style="Card.TLabel").grid(row=4, column=2, sticky="w", pady=2)
+        self.layer_step_entry = ttk.Entry(bcf, width=8)
+        self.layer_step_entry.insert(0, str(DEFAULT_BUY_LAYER_STEP))
+        self.layer_step_entry.grid(row=4, column=3, padx=(5, 0), pady=2)
+
         # ---- Sell Settings card ----
         sell_ctrl_card = ttk.Frame(right, style="Card.TFrame")
         sell_ctrl_card.pack(fill=tk.X, pady=(0, 5))
@@ -1126,9 +1165,9 @@ class TradingBotGUI:
         self.sell_interval_entry.insert(0, str(DEFAULT_SELL_INTERVAL))
         self.sell_interval_entry.grid(row=1, column=1, padx=(5, 15), pady=2)
 
-        ttk.Label(scf, text="MEWC per Sell:", style="Card.TLabel").grid(row=1, column=2, sticky="w", pady=2)
+        ttk.Label(scf, text="USDT per Sell:", style="Card.TLabel").grid(row=1, column=2, sticky="w", pady=2)
         self.sell_order_entry = ttk.Entry(scf, width=10)
-        self.sell_order_entry.insert(0, str(DEFAULT_SELL_ORDER_MEWC))
+        self.sell_order_entry.insert(0, str(DEFAULT_SELL_ORDER_USDT))
         self.sell_order_entry.grid(row=1, column=3, padx=(5, 0), pady=2)
 
         # Row 2: min price + spread
@@ -1250,11 +1289,13 @@ class TradingBotGUI:
             self.bot.max_price = float(self.max_price_entry.get())
             self.bot.buy_mode = self.mode_var.get()
             self.bot.price_bump_pct = max(0, float(self.bump_entry.get()))
+            self.bot.buy_layers = max(1, int(self.layers_entry.get()))
+            self.bot.buy_layer_step_pct = max(0, float(self.layer_step_entry.get()))
 
             # Sell settings
             self.bot.sell_enabled = self.sell_enabled_var.get()
             self.bot.sell_interval = max(30, int(self.sell_interval_entry.get()))
-            self.bot.sell_order_mewc = max(1, float(self.sell_order_entry.get()))
+            self.bot.sell_order_usdt = max(0.01, float(self.sell_order_entry.get()))
             self.bot.min_sell_price = float(self.min_sell_price_entry.get())
             self.bot.sell_spread_pct = max(0.1, float(self.sell_spread_entry.get()))
             self.bot.min_mewc_reserve = max(0, float(self.reserve_entry.get()))
